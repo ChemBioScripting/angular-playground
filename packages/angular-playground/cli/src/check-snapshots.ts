@@ -7,12 +7,10 @@ import { runCLI } from '@jest/core';
 import { Config as JestConfig } from '@jest/types';
 import { SandboxFileInformation } from './build-sandboxes';
 import { Config } from './configure';
-import { delay, removeDynamicImports } from './utils';
+import { delay, getSandboxMetadata, removeDynamicImports, SANDBOX_DEST, SANDBOX_PATH, waitForNgServe } from './utils';
 
 // Used to tailor the version of headless chromium ran by puppeteer
 const CHROME_ARGS = ['--disable-gpu', '--no-sandbox'];
-const SANDBOX_PATH = resolvePath(__dirname, '../../../dist/build/src/shared/sandboxes.js');
-const SANDBOX_DEST = resolvePath(__dirname, '../../../sandboxes_modified.js');
 const TEST_PATH = resolvePath(__dirname, '../../../dist/jest/test.js');
 
 let browser: Browser;
@@ -37,14 +35,13 @@ export async function checkSnapshots(config: Config) {
 /////////////////////////////////
 
 async function main(config: Config, hostUrl: string) {
-    const timeoutAttempts = config.timeout;
     browser = await launch({
         headless: true,
         handleSIGINT: false,
         args: CHROME_ARGS,
     });
 
-    await waitForNgServe(hostUrl, timeoutAttempts);
+    await waitForNgServe(browser, hostUrl, config.timeout);
     const execAsync = promisify(exec);
     await execAsync('cd node_modules/angular-playground');
 
@@ -59,39 +56,6 @@ async function main(config: Config, hostUrl: string) {
     await browser.close();
     const exitCode = results.numFailedTests === 0 ? 0 : 1;
     process.exit(exitCode);
-}
-
-/**
- * Creates a Chromium page and navigates to the host url.
- * If Chromium is not able to connect to the provided page, it will issue a series
- * of retries before it finally fails.
- */
-async function waitForNgServe(hostUrl: string, timeoutAttempts: number) {
-    if (timeoutAttempts === 0) {
-        await browser.close();
-        throw new Error('Unable to connect to Playground.');
-    }
-
-    const page = await browser.newPage();
-    let ngServeErrors = 0;
-
-    try {
-        page.on('console', (msg: ConsoleMessage) => {
-            if (msg.type() === 'error') {
-                ngServeErrors++;
-            }
-        });
-        await page.goto(hostUrl);
-        setTimeout(() => page.close()); // close page to prevent memory leak
-    } catch (e) {
-        await page.close();
-        await delay(1000);
-        await waitForNgServe(hostUrl, timeoutAttempts - 1);
-    }
-
-    if (ngServeErrors > 0) {
-        throw new Error('ng serve failure');
-    }
 }
 
 function normalizeResolvePath(directory) {
@@ -137,21 +101,7 @@ function writeSandboxesToTestFile(config: Config, hostUrl: string) {
     const absoluteSnapshotDirectory = normalizeResolvePath(config.snapshotDirectory);
     const absoluteDiffDirectory = normalizeResolvePath(config.diffDirectory);
     try {
-        const items: SandboxFileInformation[] = require(SANDBOX_DEST).getSandboxMenuItems();
-        const testPaths = [];
-        items.forEach((item) => {
-            item.scenarioMenuItems.forEach((scenarioItem) => {
-                if (item.key.includes(config.pathToSandboxes)) {
-                    testPaths.push({
-                        sandboxKey: item.key,
-                        scenarioKey: scenarioItem.key,
-                        url: `${encodeURIComponent(item.key)}/${encodeURIComponent(scenarioItem.description)}`,
-                        label: `${item.name} [${scenarioItem.description}]`,
-                    });
-                }
-            });
-        }, []);
-
+        const testPaths = getSandboxMetadata(false, config.pathToSandboxes);
         const extraConfig = Object.keys(config.imageSnapshotConfig)
             .map(key => `${key}: ${JSON.stringify(config.imageSnapshotConfig[key])}`)
             .join(',');
@@ -196,7 +146,7 @@ function writeSandboxesToTestFile(config: Config, hostUrl: string) {
                   // load scenario
                   const waitForNavigation = page.waitForNavigation({ waitUntil: 'networkidle0' });
                   await page.evaluate((sandboxKey, scenarioKey) => window.loadScenario(sandboxKey, scenarioKey),
-                    test.sandboxKey, test.scenarioKey)
+                    test.sandboxKey, test.scenarioKey);
                   await Promise.all([
                     waitForNavigation,
                     page.waitFor(() => window.isPlaygroundComponentLoaded()),

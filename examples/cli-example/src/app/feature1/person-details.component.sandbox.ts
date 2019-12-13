@@ -15,6 +15,7 @@ export default sandboxOf(PersonDetailsComponent, {
       person: {
         fullName: 'Tom Hardy',
         twitterHandle: 'mjones'
+        foo: 'bar'
       }
     }
   })
